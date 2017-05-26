@@ -47,6 +47,7 @@ class fruit_counter:
         self.frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
    
         self.p0 = cv2.goodFeaturesToTrack(self.frame_gray, mask = None, **feature_params)
+        print(self.p0.shape)
         # Create a mask image for drawing purposes
         self.mask = np.zeros_like(frame)
     
@@ -61,7 +62,7 @@ class fruit_counter:
         for i,(new,old) in enumerate(zip(good_new,good_old)):
             a,b = new.ravel()
             c,d = old.ravel()
-            mask = cv2.line(self.mask, (a,b),(c,d), self.color[i].tolist(), 2)
+            self.mask = cv2.line(self.mask, (a,b),(c,d), self.color[i].tolist(), 2)
             frame = cv2.circle(frame,(a,b),5,self.color[i].tolist(),-1)
         img = cv2.add(frame,self.mask)
         cv2.imshow('frame',img)
