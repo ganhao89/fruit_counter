@@ -37,10 +37,12 @@ class fruit_counter:
   global net
   global count
   global ax
+  global fruit_num
+
   def __init__(self):
 
       self.count = 0
-    
+      self.fruit_num = 0
       cfg.TEST.HAS_RPN = True  # Use RPN for proposals
 
       args = self.parse_args()
@@ -63,46 +65,95 @@ class fruit_counter:
       self.net = caffe.Net(prototxt, caffemodel, caffe.TEST)
 
       self.bridge = CvBridge()
-      self.image_sub = rospy.Subscriber("/kinect2/qhd/image_color",Image,self.callback)
+      self.image_sub = rospy.Subscriber("/iri_mvbluefox3_camera/cam2/image_raw",Image,self.callback)
     
-   
+  def fruit_add(self, point1, point2):
+      num = 0
+      points = np.empty([0,1,2], dtype = np.float32)
+      for i in range(0,len(point1)):
+          record = True
+          for j in range(0, len(point2)):
+              dist_p = np.power(point1[i][0][0]-point2[j][0][0],2)+np.power(point1[i][0][1]-point2[j][0][1],2) 
+              if (dist_p < 2500):
+                  record = False
+                  break
+          if (record):
+              points = np.append(points, point1[i][0][:].reshape(-1,1,2), axis=0)
+      
+      if points is None:
+          num = 0
+      else:
+          num = len(points)
+      points = np.append(points, point2, axis=0)
+      points = points.reshape(-1,1,2)
+      return points, num
+
+  def local_corner(self, img, p1, p3):
+      feature_params = dict( maxCorners = 1,
+                           qualityLevel = 0.3,
+                           minDistance = 3,
+                           blockSize = 3 )
+      corners = np.empty([0,1,2], dtype=np.float32)
+      for i in range(0, len(p1)):
+          patch = img[p1[i][1]:p3[i][1], p1[i][0]:p3[i][0]]
+          patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+          corner = cv2.goodFeaturesToTrack(patch, mask = None, **feature_params)
+          if corner is None:
+              corner = (p1[i][:]+p3[i][:])/2
+          else:
+              corner = [corner[0][0][0], corner[0][0][1]]
+              corner = p1[i][:]+corner
+          corner = corner.reshape(-1,1,2)
+          corners = np.append(corners, corner, axis=0)
+      return corners
+
   def vis_detections(self, im, class_name, dets, thresh=0.5):
       """Draw detected bounding boxes."""
       inds = np.where(dets[:, -1] >= thresh)[0]
       if len(inds) == 0:
           return
       if self.count==0:
-          self.lk_params = dict( winSize  = (15,15),
-                        maxLevel = 2,
-                        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+          self.lk_params = dict( winSize  = (150,150),
+                        maxLevel = 3,
+                        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.01))
           self.frame_gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-          self.p0 = dets[inds,:2]
+          #self.p0 = (dets[inds,:2]+dets[inds,2:4])/2
+          self.p0 = self.local_corner(im, dets[inds,:2], dets[inds,2:4])
           self.p0=self.p0.reshape(-1,1,2)
-          print(self.p0.shape)
           self.mask = np.zeros_like(im)
       else:
           self.mask = np.zeros_like(im)
           self.frame_gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-          p2 = dets[inds,:2]
+          #p2 = (dets[inds,:2]+dets[inds,2:4])/2
+          p2 = self.local_corner(im, dets[inds,:2], dets[inds,2:4])
           p2 = p2.reshape(-1,1,2)
           # calculate optical flow
           p1, st, err = cv2.calcOpticalFlowPyrLK(self.old_gray, self.frame_gray, self.p0, None, **self.lk_params)
           # Select good points
-          good_new = p1[st==1]
-          good_old = self.p0[st==1]
-          # draw the tracks
-          for i,(new,old) in enumerate(zip(good_new,good_old)):
-              a,b = new.ravel()
-              c,d = old.ravel()
-              self.mask = cv2.line(self.mask, (a,b),(c,d), (0,0,255), 2)
-              im = cv2.circle(im,(a,b),5,(255,0,0),-1)
-          im = cv2.add(im,self.mask)
-          #self.p0= good_new.reshape(-1,1,2)
-          self.p0 = p2
-      #for i in inds:
-      #    bbox = dets[i, :4]
-      #    score = dets[i, -1]
-      #    cv2.rectangle(im,(bbox[0], bbox[1]), (bbox[2], bbox[3]), (255,0,0), 2)
+          if p1 is not None:
+              good_new = p1[st==1]
+              good_old = self.p0[st==1]
+
+              for i, points in enumerate(p2):
+                  x,y = points.ravel()
+                  im = cv2.circle(im,(x,y),15,(0,0,255),3)
+
+              # draw the tracks
+              for i,(new,old) in enumerate(zip(good_new,good_old)):
+                  a,b = new.ravel()
+                  c,d = old.ravel()
+                  self.mask = cv2.line(self.mask, (a,b),(c,d), (0,0,255), 2)
+                  im = cv2.circle(im,(a,b),20,(255,0,0),3)
+              im = cv2.add(im,self.mask)
+              good_new = good_new.reshape(-1,1,2)
+              point_new, number = self.fruit_add(p2, good_new)
+              #self.fruit_num = self.fruit_num+point_new
+              if point_new is not None:
+                  self.p0 = point_new
+                  self.fruit_num = self.fruit_num+number
+              else:
+                  self.p0 = p2
+      print('total fruit number = {}'.format(self.fruit_num))
       cv2.imshow('frame',im)
       cv2.waitKey(30)
       self.count = 1
